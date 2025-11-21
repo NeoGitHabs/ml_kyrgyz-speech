@@ -1,15 +1,16 @@
 # main.py
+import io
 import torch
-import torchaudio
 import librosa
-import numpy as np
-from fastapi import FastAPI, File, UploadFile
-from pydantic import BaseModel
 import uvicorn
+import numpy as np
+import torchaudio
 import streamlit as st
 from pathlib import Path
+from pydantic import BaseModel
+from fastapi import FastAPI, File, UploadFile
 
-# --- Модель ---
+# --- Модель (остаётся без изменений) ---
 class VGG16Gender(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -40,41 +41,49 @@ class VGG16Gender(torch.nn.Module):
         return self.classifier(x)
 
 # Загрузка модели
-MODEL_PATH = "kyrgyz_vgg16.pth"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = VGG16Gender().to(device)
-model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+model.load_state_dict(torch.load("kyrgyz_vgg16.pth", map_location=device))
 model.eval()
 
 mel_transform = torchaudio.transforms.MelSpectrogram(
     sample_rate=22050, n_fft=1024, hop_length=512, n_mels=128).to(device)
 
-
-# --- Streamlit ---
+# --- Streamlit интерфейс ---
 st.title("Распознавание пола по голосу (киргизский)")
-uploaded = st.file_uploader("Загрузи аудио (wav/mp3)", type=["wav", "mp3"])
 
-if uploaded:
-        audio_bytes = uploaded.read()
-        st.audio(audio_bytes, format="audio/wav")
+st.write("### Вариант 1: Загрузить файл")
+uploaded_file = st.file_uploader("Выбери аудио (wav, mp3)", type=["wav", "mp3"])
 
-        if st.button("Определить пол"):
-            with st.spinner("Анализ..."):
-                # Повторяем предобработку
-                audio, _ = librosa.load(io.BytesIO(audio_bytes), sr=22050)
-                audio = torch.from_numpy(audio).to(device)
+st.write("### Вариант 2: Запись с микрофона")
+recorded_audio = st.audio_input("Нажми и говори")
 
-                with torch.no_grad():
-                    mel = mel_transform(audio.unsqueeze(0))[:, :, :400]
-                    if mel.shape[2] < 400:
-                        mel = torch.nn.functional.pad(mel, (0, 400 - mel.shape[2]))
-                    logits = model(mel)
-                    prob = torch.softmax(logits, dim=1)[0]
-                    pred = torch.argmax(prob).item()
-                    conf = prob[pred].item()
+# Выбираем, какое аудио использовать
+audio_bytes = None
+if recorded_audio:
+    audio_bytes = recorded_audio.read()
+    st.audio(audio_bytes, format="audio/wav")
+elif uploaded_file:
+    audio_bytes = uploaded_file.read()
+    st.audio(audio_bytes, format="audio/wav")
 
-                gender = "Мужской 👨" if pred == 0 else "Женский 👩"
-                st.success(f"{gender} — уверенность {conf:.1%}")
+if audio_bytes and st.button("🔊 Определить пол"):
+    with st.spinner("Анализирую голос..."):
+        # Предобработка
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=22050)
+        audio_tensor = torch.from_numpy(audio).to(device)
+
+        with torch.no_grad():
+            mel = mel_transform(audio_tensor.unsqueeze(0))[:, :, :400]
+            if mel.shape[2] < 400:
+                mel = torch.nn.functional.pad(mel, (0, 400 - mel.shape[2]))
+            logits = model(mel)
+            prob = torch.softmax(logits, dim=1)[0]
+            pred = torch.argmax(prob).item()
+            conf = prob[pred].item()
+
+        gender = "Мужской 👨" if pred == 0 else "Женский 👩"
+        st.success(f"**{gender}** — уверенность {conf:.1%}")
 
 # --- FastAPI ---
 # app = FastAPI(title="Голос → Пол (Кыргизский)")
